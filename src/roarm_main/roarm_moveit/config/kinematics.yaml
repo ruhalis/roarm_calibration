@@ -1,0 +1,4 @@
+hand:
+  kinematics_solver: roarm_description_hand/IKFastKinematicsPlugin
+  kinematics_solver_search_resolution: 0.0005  # Reduced from 0.005 for better accuracy
+  kinematics_solver_timeout: 0.1  # Increased from 0.005 to allow more search time
