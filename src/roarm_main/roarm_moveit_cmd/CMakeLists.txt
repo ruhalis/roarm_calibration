@@ -133,6 +133,7 @@ install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 # Install Python scripts
 install(PROGRAMS scripts/calibrate_roarm.py
   DESTINATION lib/${PROJECT_NAME}
+  RENAME calibrate_roarm
 )
   
 ament_package()

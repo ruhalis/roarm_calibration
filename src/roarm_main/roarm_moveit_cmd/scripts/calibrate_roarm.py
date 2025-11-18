@@ -152,55 +152,106 @@ class RoArmCalibrator(Node):
         for i in range(iterations):
             self.get_logger().info(f'\n--- Iteration {i+1}/{iterations} ---')
 
-            # Move to target
+            measurement = {
+                'iteration': i + 1,
+                'target_measurement': {},
+                'home_measurement': {}
+            }
+
+            # === MOVE TO TARGET AND MEASURE ===
+            self.get_logger().info('>> Moving to TARGET position')
             move_success, move_msg = self.move_to_position(target_x, target_y, target_z)
             if not move_success:
-                self.get_logger().error(f'Movement failed: {move_msg}')
-                results['measurements'].append({
-                    'iteration': i + 1,
+                self.get_logger().error(f'Target movement failed: {move_msg}')
+                measurement['target_measurement'] = {
                     'move_success': False,
                     'error': move_msg
-                })
-                continue
+                }
+            else:
+                self.get_logger().info(f'Movement result: {move_msg}')
 
-            self.get_logger().info(f'Movement result: {move_msg}')
+                # Wait for settling
+                self.get_logger().info(f'Waiting {settling_time}s for settling...')
+                time.sleep(settling_time)
 
-            # Wait for settling
-            self.get_logger().info(f'Waiting {settling_time}s for settling...')
-            time.sleep(settling_time)
+                # Measure actual position
+                pose_success, actual_x, actual_y, actual_z = self.get_current_pose()
+                if not pose_success:
+                    self.get_logger().error('Failed to get current pose at target')
+                    measurement['target_measurement'] = {
+                        'move_success': True,
+                        'pose_success': False
+                    }
+                else:
+                    self.get_logger().info(f'Actual position: ({actual_x:.4f}, {actual_y:.4f}, {actual_z:.4f})')
 
-            # Measure actual position
-            pose_success, actual_x, actual_y, actual_z = self.get_current_pose()
-            if not pose_success:
-                self.get_logger().error('Failed to get current pose')
-                results['measurements'].append({
-                    'iteration': i + 1,
-                    'move_success': True,
-                    'pose_success': False
-                })
-                continue
+                    # Calculate errors
+                    errors = self.calculate_error(
+                        (target_x, target_y, target_z),
+                        (actual_x, actual_y, actual_z)
+                    )
 
-            self.get_logger().info(f'Actual position: ({actual_x:.4f}, {actual_y:.4f}, {actual_z:.4f})')
+                    self.get_logger().info(f'Target errors - X: {errors["error_x"]:.6f}, '
+                                         f'Y: {errors["error_y"]:.6f}, '
+                                         f'Z: {errors["error_z"]:.6f}')
+                    self.get_logger().info(f'Target euclidean error: {errors["euclidean_error"]:.6f}')
 
-            # Calculate errors
-            errors = self.calculate_error(
-                (target_x, target_y, target_z),
-                (actual_x, actual_y, actual_z)
-            )
+                    # Store target measurement
+                    measurement['target_measurement'] = {
+                        'move_success': True,
+                        'pose_success': True,
+                        'actual': {'x': actual_x, 'y': actual_y, 'z': actual_z},
+                        'errors': errors
+                    }
 
-            self.get_logger().info(f'Errors - X: {errors["error_x"]:.6f}, '
-                                 f'Y: {errors["error_y"]:.6f}, '
-                                 f'Z: {errors["error_z"]:.6f}')
-            self.get_logger().info(f'Euclidean error: {errors["euclidean_error"]:.6f}')
+            # === MOVE TO HOME AND MEASURE ===
+            self.get_logger().info('\n>> Moving to HOME position')
+            move_success, move_msg = self.move_to_position(home_x, home_y, home_z)
+            if not move_success:
+                self.get_logger().error(f'Home movement failed: {move_msg}')
+                measurement['home_measurement'] = {
+                    'move_success': False,
+                    'error': move_msg
+                }
+            else:
+                self.get_logger().info(f'Movement result: {move_msg}')
 
-            # Store measurement
-            results['measurements'].append({
-                'iteration': i + 1,
-                'move_success': True,
-                'pose_success': True,
-                'actual': {'x': actual_x, 'y': actual_y, 'z': actual_z},
-                'errors': errors
-            })
+                # Wait for settling
+                self.get_logger().info(f'Waiting {settling_time}s for settling...')
+                time.sleep(settling_time)
+
+                # Measure actual position
+                pose_success, actual_x, actual_y, actual_z = self.get_current_pose()
+                if not pose_success:
+                    self.get_logger().error('Failed to get current pose at home')
+                    measurement['home_measurement'] = {
+                        'move_success': True,
+                        'pose_success': False
+                    }
+                else:
+                    self.get_logger().info(f'Actual position: ({actual_x:.4f}, {actual_y:.4f}, {actual_z:.4f})')
+
+                    # Calculate errors
+                    errors = self.calculate_error(
+                        (home_x, home_y, home_z),
+                        (actual_x, actual_y, actual_z)
+                    )
+
+                    self.get_logger().info(f'Home errors - X: {errors["error_x"]:.6f}, '
+                                         f'Y: {errors["error_y"]:.6f}, '
+                                         f'Z: {errors["error_z"]:.6f}')
+                    self.get_logger().info(f'Home euclidean error: {errors["euclidean_error"]:.6f}')
+
+                    # Store home measurement
+                    measurement['home_measurement'] = {
+                        'move_success': True,
+                        'pose_success': True,
+                        'actual': {'x': actual_x, 'y': actual_y, 'z': actual_z},
+                        'errors': errors
+                    }
+
+            # Store complete measurement for this iteration
+            results['measurements'].append(measurement)
 
         # Calculate statistics
         if results['measurements']:
@@ -226,43 +277,77 @@ class RoArmCalibrator(Node):
     def _calculate_statistics(self, results: Dict):
         """Calculate statistical metrics from measurements."""
         measurements = results['measurements']
-        successful_measurements = [m for m in measurements if m.get('pose_success', False)]
 
-        if not successful_measurements:
-            self.get_logger().warning('No successful measurements for statistics')
-            return
+        # Separate target and home measurements
+        successful_target = [m['target_measurement'] for m in measurements
+                            if m.get('target_measurement', {}).get('pose_success', False)]
+        successful_home = [m['home_measurement'] for m in measurements
+                          if m.get('home_measurement', {}).get('pose_success', False)]
 
-        # Extract error arrays
-        errors_x = [m['errors']['error_x'] for m in successful_measurements]
-        errors_y = [m['errors']['error_y'] for m in successful_measurements]
-        errors_z = [m['errors']['error_z'] for m in successful_measurements]
-        euclidean_errors = [m['errors']['euclidean_error'] for m in successful_measurements]
+        results['statistics'] = {}
 
-        # Calculate statistics
-        stats = {
-            'count': len(successful_measurements),
-            'error_x': self._compute_stats(errors_x),
-            'error_y': self._compute_stats(errors_y),
-            'error_z': self._compute_stats(errors_z),
-            'euclidean_error': self._compute_stats(euclidean_errors)
-        }
-
-        results['statistics'] = stats
-
-        # Print statistics
+        # Print statistics header
         self.get_logger().info('\n' + '=' * 60)
         self.get_logger().info('CALIBRATION STATISTICS')
         self.get_logger().info('=' * 60)
-        self.get_logger().info(f'Successful measurements: {stats["count"]}')
 
-        for axis in ['error_x', 'error_y', 'error_z', 'euclidean_error']:
-            s = stats[axis]
-            self.get_logger().info(f'\n{axis.upper()}:')
-            self.get_logger().info(f'  Mean: {s["mean"]:.6f}')
-            self.get_logger().info(f'  Std Dev: {s["std"]:.6f}')
-            self.get_logger().info(f'  Min: {s["min"]:.6f}')
-            self.get_logger().info(f'  Max: {s["max"]:.6f}')
-            self.get_logger().info(f'  RMS: {s["rms"]:.6f}')
+        # Calculate and display TARGET statistics
+        if successful_target:
+            errors_x = [m['errors']['error_x'] for m in successful_target]
+            errors_y = [m['errors']['error_y'] for m in successful_target]
+            errors_z = [m['errors']['error_z'] for m in successful_target]
+            euclidean_errors = [m['errors']['euclidean_error'] for m in successful_target]
+
+            target_stats = {
+                'count': len(successful_target),
+                'error_x': self._compute_stats(errors_x),
+                'error_y': self._compute_stats(errors_y),
+                'error_z': self._compute_stats(errors_z),
+                'euclidean_error': self._compute_stats(euclidean_errors)
+            }
+
+            results['statistics']['target'] = target_stats
+
+            self.get_logger().info(f'\nTARGET POSITION - Successful measurements: {target_stats["count"]}')
+            for axis in ['error_x', 'error_y', 'error_z', 'euclidean_error']:
+                s = target_stats[axis]
+                self.get_logger().info(f'\n  {axis.upper()}:')
+                self.get_logger().info(f'    Mean: {s["mean"]:.6f}')
+                self.get_logger().info(f'    Std Dev: {s["std"]:.6f}')
+                self.get_logger().info(f'    Min: {s["min"]:.6f}')
+                self.get_logger().info(f'    Max: {s["max"]:.6f}')
+                self.get_logger().info(f'    RMS: {s["rms"]:.6f}')
+        else:
+            self.get_logger().warning('\nNo successful TARGET measurements for statistics')
+
+        # Calculate and display HOME statistics
+        if successful_home:
+            errors_x = [m['errors']['error_x'] for m in successful_home]
+            errors_y = [m['errors']['error_y'] for m in successful_home]
+            errors_z = [m['errors']['error_z'] for m in successful_home]
+            euclidean_errors = [m['errors']['euclidean_error'] for m in successful_home]
+
+            home_stats = {
+                'count': len(successful_home),
+                'error_x': self._compute_stats(errors_x),
+                'error_y': self._compute_stats(errors_y),
+                'error_z': self._compute_stats(errors_z),
+                'euclidean_error': self._compute_stats(euclidean_errors)
+            }
+
+            results['statistics']['home'] = home_stats
+
+            self.get_logger().info(f'\nHOME POSITION - Successful measurements: {home_stats["count"]}')
+            for axis in ['error_x', 'error_y', 'error_z', 'euclidean_error']:
+                s = home_stats[axis]
+                self.get_logger().info(f'\n  {axis.upper()}:')
+                self.get_logger().info(f'    Mean: {s["mean"]:.6f}')
+                self.get_logger().info(f'    Std Dev: {s["std"]:.6f}')
+                self.get_logger().info(f'    Min: {s["min"]:.6f}')
+                self.get_logger().info(f'    Max: {s["max"]:.6f}')
+                self.get_logger().info(f'    RMS: {s["rms"]:.6f}')
+        else:
+            self.get_logger().warning('\nNo successful HOME measurements for statistics')
 
     def _compute_stats(self, values: List[float]) -> Dict[str, float]:
         """Compute statistical metrics for a list of values."""
@@ -302,53 +387,112 @@ def save_results_csv(results: Dict, filename: str):
         writer.writerow(['Target X', results['target']['x']])
         writer.writerow(['Target Y', results['target']['y']])
         writer.writerow(['Target Z', results['target']['z']])
+        writer.writerow(['Home X', results['home']['x']])
+        writer.writerow(['Home Y', results['home']['y']])
+        writer.writerow(['Home Z', results['home']['z']])
         writer.writerow(['Iterations', results['iterations']])
         writer.writerow([])
 
-        # Write measurements
+        # Write TARGET measurements
+        writer.writerow(['TARGET POSITION MEASUREMENTS'])
         writer.writerow(['Iteration', 'Move Success', 'Pose Success',
                         'Actual X', 'Actual Y', 'Actual Z',
                         'Error X', 'Error Y', 'Error Z', 'Euclidean Error'])
 
         for m in results['measurements']:
-            if m.get('pose_success', False):
+            target = m.get('target_measurement', {})
+            if target.get('pose_success', False):
                 writer.writerow([
                     m['iteration'],
-                    m.get('move_success', False),
-                    m.get('pose_success', False),
-                    m['actual']['x'],
-                    m['actual']['y'],
-                    m['actual']['z'],
-                    m['errors']['error_x'],
-                    m['errors']['error_y'],
-                    m['errors']['error_z'],
-                    m['errors']['euclidean_error']
+                    target.get('move_success', False),
+                    target.get('pose_success', False),
+                    target['actual']['x'],
+                    target['actual']['y'],
+                    target['actual']['z'],
+                    target['errors']['error_x'],
+                    target['errors']['error_y'],
+                    target['errors']['error_z'],
+                    target['errors']['euclidean_error']
                 ])
             else:
                 writer.writerow([
                     m['iteration'],
-                    m.get('move_success', False),
-                    m.get('pose_success', False),
+                    target.get('move_success', False),
+                    target.get('pose_success', False),
+                    '', '', '', '', '', '', ''
+                ])
+
+        writer.writerow([])
+
+        # Write HOME measurements
+        writer.writerow(['HOME POSITION MEASUREMENTS'])
+        writer.writerow(['Iteration', 'Move Success', 'Pose Success',
+                        'Actual X', 'Actual Y', 'Actual Z',
+                        'Error X', 'Error Y', 'Error Z', 'Euclidean Error'])
+
+        for m in results['measurements']:
+            home = m.get('home_measurement', {})
+            if home.get('pose_success', False):
+                writer.writerow([
+                    m['iteration'],
+                    home.get('move_success', False),
+                    home.get('pose_success', False),
+                    home['actual']['x'],
+                    home['actual']['y'],
+                    home['actual']['z'],
+                    home['errors']['error_x'],
+                    home['errors']['error_y'],
+                    home['errors']['error_z'],
+                    home['errors']['euclidean_error']
+                ])
+            else:
+                writer.writerow([
+                    m['iteration'],
+                    home.get('move_success', False),
+                    home.get('pose_success', False),
                     '', '', '', '', '', '', ''
                 ])
 
         # Write statistics
         if 'statistics' in results:
             writer.writerow([])
-            writer.writerow(['Statistics'])
-            writer.writerow(['Metric', 'Mean', 'Std Dev', 'Min', 'Max', 'RMS'])
+            writer.writerow(['STATISTICS'])
 
-            stats = results['statistics']
-            for metric in ['error_x', 'error_y', 'error_z', 'euclidean_error']:
-                s = stats[metric]
-                writer.writerow([
-                    metric.upper(),
-                    s['mean'],
-                    s['std'],
-                    s['min'],
-                    s['max'],
-                    s['rms']
-                ])
+            # Target statistics
+            if 'target' in results['statistics']:
+                writer.writerow([])
+                writer.writerow(['TARGET POSITION STATISTICS'])
+                writer.writerow(['Metric', 'Mean', 'Std Dev', 'Min', 'Max', 'RMS'])
+
+                stats = results['statistics']['target']
+                for metric in ['error_x', 'error_y', 'error_z', 'euclidean_error']:
+                    s = stats[metric]
+                    writer.writerow([
+                        metric.upper(),
+                        s['mean'],
+                        s['std'],
+                        s['min'],
+                        s['max'],
+                        s['rms']
+                    ])
+
+            # Home statistics
+            if 'home' in results['statistics']:
+                writer.writerow([])
+                writer.writerow(['HOME POSITION STATISTICS'])
+                writer.writerow(['Metric', 'Mean', 'Std Dev', 'Min', 'Max', 'RMS'])
+
+                stats = results['statistics']['home']
+                for metric in ['error_x', 'error_y', 'error_z', 'euclidean_error']:
+                    s = stats[metric]
+                    writer.writerow([
+                        metric.upper(),
+                        s['mean'],
+                        s['std'],
+                        s['min'],
+                        s['max'],
+                        s['rms']
+                    ])
 
     print(f'Results saved to CSV: {filename}')
 
@@ -362,9 +506,9 @@ def main():
                        help='Target position (x y z)')
     parser.add_argument('--iterations', type=int, default=3,
                        help='Number of iterations (default: 3)')
-    parser.add_argument('--home', nargs=3, type=float, default=[0.2, 0.0, 0.0],
+    parser.add_argument('--home', nargs=3, type=float, default=[0.2, 0.0, 0.1],
                        metavar=('X', 'Y', 'Z'),
-                       help='Home/base position to return to (default: 0.2 0.0 0.0)')
+                       help='Home/base position to return to (default: 0.2 0.0 0.1)')
     parser.add_argument('--settling-time', type=float, default=1.0,
                        help='Time to wait after movement before measuring in seconds (default: 1.0)')
     parser.add_argument('--output-dir', type=str, default='.',
