@@ -6,6 +6,14 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include "roarm_moveit/srv/move_point_cmd.hpp"
 #include "roarm_moveit_cmd/ik.h"
+
+// Calibration offset parameters (loaded from config file)
+struct CalibrationOffsets {
+  bool enabled = false;
+  double x = 0.0;
+  double y = 0.0;
+  double z = 0.0;
+};
 void handle_service(const std::shared_ptr<roarm_moveit::srv::MovePointCmd::Request> request,
                     std::shared_ptr<roarm_moveit::srv::MovePointCmd::Response> response)
 {
@@ -13,14 +21,42 @@ void handle_service(const std::shared_ptr<roarm_moveit::srv::MovePointCmd::Reque
   rclcpp::Node::SharedPtr node = std::make_shared<rclcpp::Node>("move_point_cmd_service_node");
   auto logger = node->get_logger();
 
+  // Load calibration offset parameters from parameter server
+  CalibrationOffsets calib;
+  node->declare_parameter("calibration.enabled", false);
+  node->declare_parameter("calibration.offsets.x", 0.0);
+  node->declare_parameter("calibration.offsets.y", 0.0);
+  node->declare_parameter("calibration.offsets.z", 0.0);
+
+  calib.enabled = node->get_parameter("calibration.enabled").as_bool();
+  calib.x = node->get_parameter("calibration.offsets.x").as_double();
+  calib.y = node->get_parameter("calibration.offsets.y").as_double();
+  calib.z = node->get_parameter("calibration.offsets.z").as_double();
+
   // 创建 MoveIt MoveGroup 接口
   moveit::planning_interface::MoveGroupInterface move_group(node, "hand");
 
   // 设置目标位置和姿态
   geometry_msgs::msg::Pose target_pose;
-  target_pose.position.x = request->x;
-  target_pose.position.y = -1*request->y;
-  target_pose.position.z = request->z;
+
+  // Apply calibration offsets if enabled
+  double corrected_x = request->x;
+  double corrected_y = request->y;
+  double corrected_z = request->z;
+
+  if (calib.enabled) {
+    corrected_x = request->x - calib.x;
+    corrected_y = request->y - calib.y;
+    corrected_z = request->z - calib.z;
+
+    RCLCPP_INFO(logger, "Calibration enabled: offsets [%.5f, %.5f, %.5f]", calib.x, calib.y, calib.z);
+    RCLCPP_INFO(logger, "Original command: [%.4f, %.4f, %.4f]", request->x, request->y, request->z);
+    RCLCPP_INFO(logger, "Corrected target: [%.4f, %.4f, %.4f]", corrected_x, corrected_y, corrected_z);
+  }
+
+  target_pose.position.x = corrected_x;
+  target_pose.position.y = -1 * corrected_y;
+  target_pose.position.z = corrected_z;
 
   cartesian_to_polar(1000*target_pose.position.x,1000*target_pose.position.y, &base_r, &BASE_point_RAD);
   simpleLinkageIkRad(l2, l3, base_r, 1000*target_pose.position.z);

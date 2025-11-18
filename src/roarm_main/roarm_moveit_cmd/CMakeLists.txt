@@ -130,10 +130,14 @@ install(TARGETS getposecmd getposecmd_tf2 keyboardcontrol movepointcmd movecircl
 )
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 
-# Install Python scripts
+# Install Python scripts and shell scripts
 install(PROGRAMS scripts/calibrate_roarm.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME calibrate_roarm
+)
+
+install(PROGRAMS scripts/run_movepointcmd_calibrated.sh
+  DESTINATION lib/${PROJECT_NAME}
 )
   
 ament_package()

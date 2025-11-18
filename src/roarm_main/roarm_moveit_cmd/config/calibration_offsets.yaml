@@ -1,0 +1,44 @@
+# Calibration Offsets Configuration
+# Generated from calibration data: 2025-11-18
+#
+# This file contains systematic error compensation parameters
+# to improve positioning accuracy of the RoArm-M2-S
+#
+# Calibration source: calibration_20251118_105156.json
+# - Target position errors (mean): X=-9.97mm, Y=-0.05mm, Z=+10.68mm
+# - Home position errors (mean): X=-9.96mm, Y=+0.17mm, Z=+11.20mm
+# - Repeatability (std dev): <0.35mm on all axes
+
+# ROS2 parameter file format requires node namespace
+move_point_cmd_service_node:
+  ros__parameters:
+    calibration:
+      # Enable/disable calibration compensation
+      # Set to false to revert to uncalibrated behavior
+      enabled: true
+
+      # Calibration method identifier
+      method: "constant_offset"
+
+      # Constant offset compensation (in meters)
+      # These offsets are SUBTRACTED from commanded positions
+      # before inverse kinematics solving
+      offsets:
+        x: 0.00997215  # meters (-9.97mm mean error from target data)
+        y: 0.00005325  # meters (-0.05mm mean error from target data)
+        z: -0.01067700  # meters (+10.68mm mean error from target data)
+
+      # Calibration metadata
+      metadata:
+        calibration_date: "2025-11-18T10:49:51"
+        calibration_iterations: 20
+        target_position: [0.2, -0.1, -0.1]
+        home_position: [0.2, 0.0, 0.1]
+        mean_euclidean_error_before: 0.014618  # meters
+        expected_improvement: "60-70% error reduction"
+
+      # Future expansion: position-dependent compensation
+      # polynomial_coefficients:
+      #   x: [c0, c1_x, c1_y, c1_z, c2_xx, c2_yy, c2_zz]
+      #   y: [c0, c1_x, c1_y, c1_z, c2_xx, c2_yy, c2_zz]
+      #   z: [c0, c1_x, c1_y, c1_z, c2_xx, c2_yy, c2_zz]
