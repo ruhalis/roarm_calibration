@@ -103,18 +103,11 @@ target_include_directories(movepointcmd
 ament_target_dependencies(movepointcmd 
     ${THIS_PACKAGE_INCLUDE_DEPENDS} Boost)
   
-add_executable(movecirclecmd 
+add_executable(movecirclecmd
     src/movecirclecmd.cpp)
-target_include_directories(movecirclecmd 
+target_include_directories(movecirclecmd
     PUBLIC include)
-ament_target_dependencies(movecirclecmd 
-    ${THIS_PACKAGE_INCLUDE_DEPENDS} Boost)
-    
-add_executable(webappcontrol
-    src/webappcontrol.cpp)
-target_include_directories(webappcontrol
-    PUBLIC include)
-ament_target_dependencies(webappcontrol 
+ament_target_dependencies(movecirclecmd
     ${THIS_PACKAGE_INCLUDE_DEPENDS} Boost)
 
 add_executable(setgrippercmd
@@ -125,7 +118,7 @@ ament_target_dependencies(setgrippercmd
     ${THIS_PACKAGE_INCLUDE_DEPENDS} Boost)
              
 # Install targets
-install(TARGETS getposecmd getposecmd_tf2 keyboardcontrol movepointcmd movecirclecmd webappcontrol setgrippercmd
+install(TARGETS getposecmd getposecmd_tf2 keyboardcontrol movepointcmd movecirclecmd setgrippercmd
   DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
