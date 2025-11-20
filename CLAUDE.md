@@ -86,7 +86,12 @@ ros2 run roarm_moveit_cmd keyboardcontrol
 
 ## Calibration
 
-### Running Calibration Script
+The calibration system supports two modes: **single-target** (backward compatible) and **multi-target** (comprehensive workspace mapping).
+
+### Single-Target Calibration (Quick Test)
+
+Test a single position repeatedly to measure accuracy and repeatability:
+
 ```bash
 ros2 run roarm_moveit_cmd calibrate_roarm.py \
   --target 0.2 -0.1 -0.1 \
@@ -96,9 +101,84 @@ ros2 run roarm_moveit_cmd calibrate_roarm.py \
   --output-dir .
 ```
 
-This generates:
-- `calibration_YYYYMMDD_HHMMSS.json` - Full results
+**Parameters:**
+- `--target X Y Z` - Target position to test
+- `--iterations N` - Number of repetitions (default: 3)
+- `--home X Y Z` - Home position to return to (default: 0.2 0.0 0.1)
+- `--settling-time S` - Wait time after movement (default: 1.0s)
+- `--output-dir PATH` - Output directory (default: current directory)
+
+**Output files:**
+- `calibration_YYYYMMDD_HHMMSS.json` - Full results with statistics
 - `calibration_YYYYMMDD_HHMMSS.csv` - Tabular data
+
+### Multi-Target Calibration (Comprehensive)
+
+Test multiple positions across the workspace to map positioning errors:
+
+```bash
+ros2 run roarm_moveit_cmd calibrate_roarm.py \
+  --targets-config src/roarm_main/roarm_moveit_cmd/config/calibration_targets.yaml \
+  --loops 2 \
+  --output-dir .
+```
+
+**Parameters:**
+- `--targets-config PATH` - YAML file with target positions
+- `--loops N` - Number of complete cycles through all targets (default: 1)
+- `--settling-time S` - Override config settling time (optional)
+- `--home X Y Z` - Override config home position (optional)
+- `--output-dir PATH` - Output directory (default: current directory)
+
+**Movement Pattern (per loop):**
+```
+home → target1 → home → target2 → home → ... → target9 → home
+```
+
+**Default Config:** `config/calibration_targets.yaml` includes 9 targets in a 3×3 grid:
+- 3 height levels (low/mid/high: -0.10m, 0.0m, +0.10m)
+- 3 radial distances (front/mid/back: 0.15m, 0.20m, 0.25m)
+- 3 lateral positions (left/center/right: -0.10m, 0.0m, +0.10m)
+
+**Output files:**
+- `calibration_multi_YYYYMMDD_HHMMSS.json` - Full results with per-target and global statistics
+- `calibration_multi_YYYYMMDD_HHMMSS.csv` - Comprehensive tabular data
+
+**Example output:** With 2 loops and 9 targets:
+- Total movements: 36 (2 loops × 9 targets × 2 moves)
+- Estimated time: ~30-40 minutes
+- Statistics: Per-target errors + global workspace accuracy
+- Comparison: Best/worst performing regions
+
+### Customizing Target Positions
+
+Edit `config/calibration_targets.yaml` to customize target positions:
+
+```yaml
+targets:
+  - name: "custom_target_1"
+    x: 0.18
+    y: -0.05
+    z: 0.05
+    description: "Custom test position"
+
+  - name: "custom_target_2"
+    x: 0.22
+    y: 0.05
+    z: -0.05
+    description: "Another test position"
+```
+
+**Workspace limits** (safety validation):
+```yaml
+workspace_limits:
+  x_min: 0.10
+  x_max: 0.30
+  y_min: -0.15
+  y_max: 0.15
+  z_min: -0.15
+  z_max: 0.15
+```
 
 ### Using Calibrated Control
 
@@ -117,6 +197,21 @@ Or when running nodes directly with calibration:
 ros2 run roarm_moveit_cmd movepointcmd \
   --ros-args --params-file install/roarm_moveit_cmd/share/roarm_moveit_cmd/config/calibration_offsets.yaml
 ```
+
+### Analyzing Calibration Results
+
+**Single-target mode:** Provides statistics for one position (mean error, std dev, repeatability)
+
+**Multi-target mode:** Provides:
+1. **Per-target statistics:** Individual accuracy metrics for each position
+2. **Global statistics:** Overall workspace accuracy (mean, std dev, RMS)
+3. **Target comparison:** Ranking of best/worst performing regions
+4. **Position-dependent errors:** Data to identify if errors vary across workspace
+
+Use multi-target results to:
+- Identify workspace regions with higher/lower accuracy
+- Determine if constant offsets are sufficient or if position-dependent compensation is needed
+- Plan future polynomial compensation implementation
 
 ## Service Commands
 
@@ -180,12 +275,23 @@ ros2 service call /move_circle_cmd roarm_moveit/srv/MoveCircleCmd "{x: 0.2, y: 0
 ### Calibration System
 
 The calibration system measures positioning errors by:
-1. Moving to target positions repeatedly
+1. Moving to target positions repeatedly (single or multiple targets)
 2. Reading actual positions via forward kinematics
 3. Calculating systematic errors (X, Y, Z offsets)
 4. Generating compensation parameters in `calibration_offsets.yaml`
 
+**Modes:**
+- **Single-target:** Tests one position repeatedly for quick accuracy assessment
+- **Multi-target:** Tests 9 positions across workspace for comprehensive error mapping
+
+**Movement pattern (multi-target):** Home → Target1 → Home → Target2 → Home ... (configurable loops)
+
 The calibrated launch file (`command_control_calibrated.launch.py`) loads these offsets and applies them before inverse kinematics solving, improving accuracy from ~14mm to ~5mm error.
+
+**Files:**
+- `scripts/calibrate_roarm.py` - Automated calibration script (single/multi-target)
+- `config/calibration_targets.yaml` - Multi-target position definitions (9 targets in 3×3 grid)
+- `config/calibration_offsets.yaml` - Compensation parameters applied during control
 
 ### Control Flow
 
