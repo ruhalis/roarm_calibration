@@ -12,79 +12,79 @@ home_position:
 # Format: [x, y, z] in meters
 targets:
   # === LOW HEIGHT LEVEL (z = -0.10m) ===
-  - name: "low_front_left"
-    x: 0.15
-    y: -0.10
-    z: -0.10
-    description: "Low height, front reach, left side"
+  - name: "1"
+    x: 0.2
+    y: 0.2
+    z: 0.4
+    description: "1"
 
-  - name: "low_mid_center"
-    x: 0.20
+  - name: "2"
+    x: 0.2
     y: 0.0
-    z: -0.10
-    description: "Low height, medium reach, centered"
+    z: 0.4
+    description: "2"
 
-  - name: "low_back_right"
-    x: 0.25
-    y: 0.10
-    z: -0.10
-    description: "Low height, back reach, right side"
+  - name: "3"
+    x: 0.2
+    y: -0.2
+    z: 0.4
+    description: "3"
 
   # === MEDIUM HEIGHT LEVEL (z = 0.0m) ===
-  - name: "mid_front_right"
-    x: 0.15
-    y: 0.10
-    z: 0.0
-    description: "Mid height, front reach, right side"
+  - name: "4"
+    x: 0.0
+    y: 0.2
+    z: 0.4
+    description: "4"
 
-  - name: "mid_mid_center"
-    x: 0.20
+  - name: "5"
+    x: 0.0
     y: 0.0
-    z: 0.0
-    description: "Mid height, medium reach, centered (neutral pose)"
-
-  - name: "mid_back_left"
-    x: 0.25
-    y: -0.10
-    z: 0.0
-    description: "Mid height, back reach, left side"
+    z: 0.4
+    description: "5"
 
   # === HIGH HEIGHT LEVEL (z = 0.10m) ===
-  - name: "high_front_center"
-    x: 0.15
+  - name: "6"
+    x: 0.0
+    y: -0.2
+    z: 0.4
+    description: "6"
+
+  - name: "7"
+    x: -0.2
+    y: 0.2
+    z: 0.4
+    description: "7"
+
+  - name: "8"
+    x: -0.2
     y: 0.0
-    z: 0.10
-    description: "High height, front reach, centered"
+    z: 0.4
+    description: "8"
 
-  - name: "high_mid_right"
-    x: 0.20
-    y: 0.10
-    z: 0.10
-    description: "High height, medium reach, right side"
-
-  - name: "high_back_left"
-    x: 0.25
-    y: -0.10
-    z: 0.10
-    description: "High height, back reach, left side"
+  - name: "9"
+    x: -0.2
+    y: -0.2
+    z: 0.4
+    description: "9"
 
 # Workspace safety bounds (optional validation)
 # Prevents attempting positions outside safe operating range
 workspace_limits:
-  x_min: 0.10
-  x_max: 0.30
-  y_min: -0.15
-  y_max: 0.15
-  z_min: -0.15
-  z_max: 0.15
+  x_min: -0.40
+  x_max: 0.40
+  y_min: -0.4
+  y_max: 0.4
+  z_min: -0.4
+  z_max: 0.4
 
 # Calibration parameters
 calibration_settings:
   # Time to wait after each movement before measuring (seconds)
-  settling_time: 1.0
+  settling_time: 1.5
 
   # Number of complete loops through all 9 targets (default)
-  default_loops: 1
+  default_loops: 4
 
   # Movement timeout for each target (seconds)
   movement_timeout: 10.0

@@ -129,6 +129,12 @@ install(PROGRAMS scripts/calibrate_roarm.py
   RENAME calibrate_roarm
 )
 
+# Install calibration Python package
+install(DIRECTORY scripts/calibration
+  DESTINATION lib/${PROJECT_NAME}
+  FILES_MATCHING PATTERN "*.py"
+)
+
 install(PROGRAMS scripts/run_movepointcmd_calibrated.sh
   DESTINATION lib/${PROJECT_NAME}
 )
