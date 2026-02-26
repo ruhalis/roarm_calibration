@@ -48,6 +48,19 @@ ARM_DEFAULT_Z_MM = 50.0      # default end-effector height in mm
 GRIPPER_DEFAULT_T = 3.14     # default gripper/wrist angle in radians (closed)
 
 
+def gantry_to_arm_coords(local_x: float, local_y: float) -> tuple:
+    """
+    Convert gantry-frame local coordinates to RoArm coordinates.
+    The RoArm's coordinate frame is rotated 90 degrees clockwise
+    relative to the gantry XY frame.
+
+    Gantry (local_x, local_y) -> Arm (local_y, -local_x)
+    """
+    arm_x = local_y
+    arm_y = -local_x
+    return arm_x, arm_y
+
+
 class GantryController:
     """
     Talks to the Arduino running motor_control.c++ over serial.
@@ -359,9 +372,11 @@ def goto_position(gantry: GantryController, arm: RoArmController,
     else:
         print(f"  Gantry already in position")
 
-    # Step 2: move arm end-effector to the local offset (all mm)
-    print(f"  Moving arm to local ({arm_local_x:.1f}, {arm_local_y:.1f}, {arm_z_mm:.1f}) mm ...")
-    success = arm.move_to_xyz(arm_local_x, arm_local_y, arm_z_mm)
+    # Step 2: rotate local coords from gantry frame to arm frame, then move
+    arm_x, arm_y = gantry_to_arm_coords(arm_local_x, arm_local_y)
+    print(f"  Arm local (gantry frame): ({arm_local_x:.1f}, {arm_local_y:.1f}) mm")
+    print(f"  Arm command (arm frame):  ({arm_x:.1f}, {arm_y:.1f}, {arm_z_mm:.1f}) mm")
+    success = arm.move_to_xyz(arm_x, arm_y, arm_z_mm)
 
     if success:
         print(f"  DONE - end-effector at global ({target_x_mm:.1f}, {target_y_mm:.1f}) mm")
@@ -483,8 +498,9 @@ def interactive_mode(gantry: GantryController, arm: RoArmController,
                 coords = raw[len("arm"):].replace(",", " ").split()
                 ax_mm = float(coords[0])
                 ay_mm = float(coords[1])
-                print(f"  Moving arm to local ({ax_mm:.1f}, {ay_mm:.1f}, {arm_z_mm:.1f}) mm ...")
-                arm.move_to_xyz(ax_mm, ay_mm, arm_z_mm)
+                arm_x, arm_y = gantry_to_arm_coords(ax_mm, ay_mm)
+                print(f"  Gantry frame: ({ax_mm:.1f}, {ay_mm:.1f}) -> Arm frame: ({arm_x:.1f}, {arm_y:.1f}, {arm_z_mm:.1f}) mm")
+                arm.move_to_xyz(arm_x, arm_y, arm_z_mm)
             except (ValueError, IndexError):
                 print("  Usage: arm x, y  (mm, local to arm base)")
 
