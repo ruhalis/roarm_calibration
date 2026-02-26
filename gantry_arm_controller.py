@@ -44,7 +44,7 @@ L3 = math.sqrt(L3A**2 + L3B**2)
 ARM_MAX_REACH_MM = L2 + L3  # ~519mm theoretical max
 
 ARM_REACH_RADIUS_MM = 200.0  # default comfortable reach radius in mm
-ARM_DEFAULT_Z_MM = 50.0      # default end-effector height in mm
+ARM_DEFAULT_Z_MM = -15.0     # default end-effector height in mm
 GRIPPER_DEFAULT_T = 3.14     # default gripper/wrist angle in radians (closed)
 
 
