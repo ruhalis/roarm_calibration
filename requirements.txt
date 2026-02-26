@@ -4,4 +4,6 @@ ujson
 aiortc
 av
 opencv-python
-
+opencv-contrib-python
+numpy
+pyrealsense2
