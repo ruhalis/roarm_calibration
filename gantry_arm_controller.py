@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
-Gantry + RoArm Coordinated Controller
+Gantry + RoArm-M2-S Coordinated Controller
 
-Controls a 2-axis XY gantry (Arduino stepper motors) and a RoArm manipulator
-to reach any target position in the combined workspace.
+Controls a 2-axis XY gantry (Arduino stepper motors) and a Waveshare
+RoArm-M2-S manipulator to reach any target position in the combined workspace.
 
 Strategy:
-  1. Given target (x, y), compute how much the gantry must move so the arm's
-     base is within ARM_REACH_RADIUS of the target.
+  1. Given target (x, y) in mm, compute how much the gantry must move so the
+     arm's base is within ARM_REACH_RADIUS of the target.
   2. Move gantry to that position (relative mm commands over serial).
   3. Compute the local offset from the arm's base to the target.
   4. Command the RoArm to move its end-effector to that local offset.
 
-The gantry Arduino expects: "dx_mm, dy_mm\n" (relative moves).
-The RoArm is controlled via ROS2 MovePointCmd service (x, y, z in meters).
+The gantry Arduino expects: "dx_mm, dy_mm\\n" (relative moves).
+The RoArm uses Waveshare JSON protocol over serial (all coordinates in mm):
+  T:1041  - Cartesian move (non-blocking): {"T":1041,"x":235,"y":0,"z":234,"t":3.14}
+  T:104   - Cartesian move (blocking):     {"T":104,"x":235,"y":0,"z":234,"t":3.14,"spd":0.25}
+  T:100   - Move to init position
+  T:105   - Get feedback (position, angles, torque)
 """
 
 import math
 import time
 import json
 import serial
+import threading
 import argparse
 import subprocess
 import sys
@@ -36,7 +41,8 @@ L3 = math.sqrt(L3A**2 + L3B**2)
 ARM_MAX_REACH_MM = L2 + L3  # ~519mm theoretical max
 
 ARM_REACH_RADIUS_MM = 200.0  # default comfortable reach radius in mm
-ARM_DEFAULT_Z_M = 0.05       # default end-effector height in meters
+ARM_DEFAULT_Z_MM = 50.0      # default end-effector height in mm
+GRIPPER_DEFAULT_T = 3.14     # default gripper/wrist angle in radians (closed)
 
 
 class GantryController:
@@ -124,50 +130,109 @@ class GantryController:
 
 class RoArmController:
     """
-    Controls the RoArm via ROS2 CLI.
-    Sends MovePointCmd service calls for end-effector positioning.
-    Sends JSON commands directly over serial for lower-level control.
+    Controls Waveshare RoArm-M2-S via direct serial JSON commands.
+    Protocol reference: https://www.waveshare.com/wiki/RoArm-M2-S_Robotic_Arm_Control
+
+    Key commands:
+      T:100  - Move to init position (blocking)
+      T:1041 - Cartesian move, non-blocking: {"T":1041,"x":mm,"y":mm,"z":mm,"t":rad}
+      T:104  - Cartesian move, blocking:     {"T":104,"x":mm,"y":mm,"z":mm,"t":rad,"spd":0.25}
+      T:105  - Request feedback (returns T:1051 with position/angles/torque)
+    All x,y,z values are in mm. t is gripper/wrist angle in radians.
     """
 
     def __init__(self, roarm_port: str = None, baud: int = 115200):
         self.roarm_port = roarm_port
         self.roarm_serial = None
+        self._reader_thread = None
+        self._last_feedback = None
+        self._running = False
+
         if roarm_port:
-            self.roarm_serial = serial.Serial(roarm_port, baud, timeout=1)
-            time.sleep(1)
+            self.roarm_serial = serial.Serial(
+                roarm_port, baud, timeout=1,
+                dsrdtr=None
+            )
+            self.roarm_serial.setRTS(False)
+            self.roarm_serial.setDTR(False)
+            time.sleep(0.5)
 
-    def move_to_xyz(self, x_m: float, y_m: float, z_m: float) -> bool:
-        """
-        Move end-effector to local coordinates (meters) using direct JSON serial.
-        Uses the arm's native T:104 command for Cartesian positioning.
-        x, y, z are in meters; the arm protocol uses mm internally.
-        """
-        if self.roarm_serial:
-            return self._move_serial(x_m, y_m, z_m)
-        else:
-            return self._move_ros2(x_m, y_m, z_m)
+            self._running = True
+            self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
+            self._reader_thread.start()
 
-    def _move_serial(self, x_m: float, y_m: float, z_m: float) -> bool:
-        """Send Cartesian move via direct serial JSON command."""
-        x_mm = x_m * 1000.0
-        y_mm = y_m * 1000.0
-        z_mm = z_m * 1000.0
+            # drain any startup garbage
+            time.sleep(1.0)
 
-        # T:104 is the Cartesian coordinate move command
-        cmd = {"T": 104, "x": x_mm, "y": y_mm, "z": z_mm, "spd": 0, "acc": 10}
+    def _read_loop(self):
+        """Background thread to continuously read arm serial output."""
+        while self._running:
+            try:
+                if self.roarm_serial and self.roarm_serial.in_waiting:
+                    line = self.roarm_serial.readline().decode('utf-8', errors='ignore').strip()
+                    if not line:
+                        continue
+                    # try to parse JSON feedback
+                    try:
+                        data = json.loads(line)
+                        if data.get("T") == 1051:
+                            self._last_feedback = data
+                    except json.JSONDecodeError:
+                        pass
+                else:
+                    time.sleep(0.05)
+            except Exception:
+                time.sleep(0.1)
+
+    def send_command(self, cmd: dict):
+        """Send a JSON command to the RoArm."""
+        if not self.roarm_serial:
+            return
         cmd_str = json.dumps(cmd) + "\n"
         self.roarm_serial.write(cmd_str.encode('utf-8'))
-        time.sleep(0.5)
 
-        # read back response
-        while self.roarm_serial.in_waiting:
-            line = self.roarm_serial.readline().decode('utf-8', errors='ignore').strip()
-            if line:
-                print(f"  [RoArm] {line}")
+    def init_position(self):
+        """Move arm to initial/home position (T:100). Blocking on arm side."""
+        print("  [RoArm] Moving to init position...")
+        self.send_command({"T": 100})
+        time.sleep(3)
+
+    def move_to_xyz(self, x_mm: float, y_mm: float, z_mm: float,
+                    t: float = GRIPPER_DEFAULT_T, blocking: bool = True) -> bool:
+        """
+        Move end-effector to Cartesian coordinates (all in mm).
+        x: forward (+) / backward (-)
+        y: left (+) / right (-)
+        z: up (+) / down (-)
+        t: gripper/wrist angle in radians (default 3.14 = closed)
+        """
+        if self.roarm_serial:
+            return self._move_serial(x_mm, y_mm, z_mm, t, blocking)
+        else:
+            return self._move_ros2(x_mm, y_mm, z_mm)
+
+    def _move_serial(self, x_mm: float, y_mm: float, z_mm: float,
+                     t: float, blocking: bool) -> bool:
+        if blocking:
+            cmd = {"T": 104, "x": x_mm, "y": y_mm, "z": z_mm, "t": t, "spd": 0.25}
+        else:
+            cmd = {"T": 1041, "x": x_mm, "y": y_mm, "z": z_mm, "t": t}
+
+        print(f"  [RoArm] Sending: {json.dumps(cmd)}")
+        self.send_command(cmd)
+
+        if blocking:
+            time.sleep(2.0)
+        else:
+            time.sleep(0.5)
+
         return True
 
-    def _move_ros2(self, x_m: float, y_m: float, z_m: float) -> bool:
+    def _move_ros2(self, x_mm: float, y_mm: float, z_mm: float) -> bool:
         """Move via ROS2 service call (requires ROS2 stack running)."""
+        x_m = x_mm / 1000.0
+        y_m = y_mm / 1000.0
+        z_m = z_mm / 1000.0
         try:
             cmd = [
                 "ros2", "service", "call",
@@ -182,7 +247,19 @@ class RoArmController:
             print(f"  [ROS2] Error: {e}")
             return False
 
+    def get_feedback(self) -> dict:
+        """Request and return arm feedback (T:105 -> T:1051 response)."""
+        self._last_feedback = None
+        self.send_command({"T": 105})
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if self._last_feedback:
+                return self._last_feedback
+            time.sleep(0.1)
+        return None
+
     def close(self):
+        self._running = False
         if self.roarm_serial and self.roarm_serial.is_open:
             self.roarm_serial.close()
 
@@ -223,10 +300,11 @@ def compute_gantry_target(target_x_mm: float, target_y_mm: float,
 
 def goto_position(gantry: GantryController, arm: RoArmController,
                   target_x_mm: float, target_y_mm: float,
-                  arm_z_m: float = ARM_DEFAULT_Z_M,
+                  arm_z_mm: float = ARM_DEFAULT_Z_MM,
                   reach_radius_mm: float = ARM_REACH_RADIUS_MM):
     """
     Coordinated move: gantry positions the arm base, then arm reaches the target.
+    All units in mm.
     """
     print(f"\n{'='*60}")
     print(f"TARGET: ({target_x_mm:.1f}, {target_y_mm:.1f}) mm")
@@ -251,12 +329,9 @@ def goto_position(gantry: GantryController, arm: RoArmController,
     else:
         print(f"  Gantry already in position")
 
-    # Step 2: move arm end-effector to the local offset
-    arm_x_m = arm_local_x / 1000.0
-    arm_y_m = arm_local_y / 1000.0
-
-    print(f"  Moving arm to local ({arm_x_m:.4f}, {arm_y_m:.4f}, {arm_z_m:.4f}) m ...")
-    success = arm.move_to_xyz(arm_x_m, arm_y_m, arm_z_m)
+    # Step 2: move arm end-effector to the local offset (all mm)
+    print(f"  Moving arm to local ({arm_local_x:.1f}, {arm_local_y:.1f}, {arm_z_mm:.1f}) mm ...")
+    success = arm.move_to_xyz(arm_local_x, arm_local_y, arm_z_mm)
 
     if success:
         print(f"  DONE - end-effector at global ({target_x_mm:.1f}, {target_y_mm:.1f}) mm")
@@ -267,16 +342,15 @@ def goto_position(gantry: GantryController, arm: RoArmController,
 
 
 def go_home(gantry: GantryController, arm: RoArmController,
-            arm_z_m: float = ARM_DEFAULT_Z_M):
+            arm_z_mm: float = ARM_DEFAULT_Z_MM):
     """Return both gantry and arm to home (0, 0)."""
     print(f"\n{'='*60}")
     print("HOMING: returning to (0, 0)")
     print(f"{'='*60}")
 
-    # First retract arm to safe position above base
-    print("  Retracting arm to home...")
-    arm.move_to_xyz(0.15, 0.0, arm_z_m)
-    time.sleep(1)
+    # First send arm to init position
+    print("  Sending arm to init position...")
+    arm.init_position()
 
     # Then move gantry to 0,0
     gx, gy = gantry.get_position()
@@ -289,23 +363,25 @@ def go_home(gantry: GantryController, arm: RoArmController,
 
 
 def interactive_mode(gantry: GantryController, arm: RoArmController,
-                     reach_radius_mm: float, arm_z_m: float):
+                     reach_radius_mm: float, arm_z_mm: float):
     """Interactive command loop."""
     print(f"\n{'='*60}")
     print("INTERACTIVE GANTRY + ARM CONTROLLER")
     print(f"{'='*60}")
     print(f"  Arm reach radius: {reach_radius_mm:.0f} mm")
-    print(f"  Arm Z height:     {arm_z_m:.3f} m")
+    print(f"  Arm Z height:     {arm_z_mm:.0f} mm")
     print(f"  Gantry position:  (0, 0) mm  [homed]")
     print()
     print("Commands:")
     print("  x, y          - go to position (mm), e.g.: 200, 200")
     print("  gantry x, y   - move gantry only (mm)")
     print("  arm x, y      - move arm only (mm, local coords)")
-    print("  home           - return to (0, 0)")
+    print("  init           - send arm to init/home position")
+    print("  feedback       - get arm position feedback")
+    print("  home           - return everything to (0, 0)")
     print("  pos            - show current positions")
     print("  radius N       - set arm reach radius (mm)")
-    print("  z N            - set arm Z height (m)")
+    print("  z N            - set arm Z height (mm)")
     print("  quit / exit    - exit")
     print()
 
@@ -325,13 +401,27 @@ def interactive_mode(gantry: GantryController, arm: RoArmController,
             break
 
         elif parts[0] == "home":
-            go_home(gantry, arm, arm_z_m)
+            go_home(gantry, arm, arm_z_mm)
+
+        elif parts[0] == "init":
+            arm.init_position()
+
+        elif parts[0] == "feedback":
+            fb = arm.get_feedback()
+            if fb:
+                print(f"  Arm position: x={fb.get('x',0):.1f}, y={fb.get('y',0):.1f}, z={fb.get('z',0):.1f} mm")
+                print(f"  Joint angles: base={fb.get('b',0):.3f}, shoulder={fb.get('s',0):.3f}, "
+                      f"elbow={fb.get('e',0):.3f}, hand={fb.get('t',0):.3f} rad")
+                print(f"  Torque: B={fb.get('torB',0)}, S={fb.get('torS',0)}, "
+                      f"E={fb.get('torE',0)}, H={fb.get('torH',0)}")
+            else:
+                print("  No feedback received (timeout)")
 
         elif parts[0] == "pos":
             gx, gy = gantry.get_position()
             print(f"  Gantry: ({gx:.1f}, {gy:.1f}) mm")
             print(f"  Reach radius: {reach_radius_mm:.0f} mm")
-            print(f"  Arm Z: {arm_z_m:.3f} m")
+            print(f"  Arm Z: {arm_z_mm:.0f} mm")
 
         elif parts[0] == "radius" and len(parts) >= 2:
             try:
@@ -342,8 +432,8 @@ def interactive_mode(gantry: GantryController, arm: RoArmController,
 
         elif parts[0] == "z" and len(parts) >= 2:
             try:
-                arm_z_m = float(parts[1])
-                print(f"  Arm Z set to {arm_z_m:.3f} m")
+                arm_z_mm = float(parts[1])
+                print(f"  Arm Z set to {arm_z_mm:.0f} mm")
             except ValueError:
                 print("  Invalid number")
 
@@ -363,10 +453,8 @@ def interactive_mode(gantry: GantryController, arm: RoArmController,
                 coords = raw[len("arm"):].replace(",", " ").split()
                 ax_mm = float(coords[0])
                 ay_mm = float(coords[1])
-                ax_m = ax_mm / 1000.0
-                ay_m = ay_mm / 1000.0
-                print(f"  Moving arm to local ({ax_m:.4f}, {ay_m:.4f}, {arm_z_m:.4f}) m ...")
-                arm.move_to_xyz(ax_m, ay_m, arm_z_m)
+                print(f"  Moving arm to local ({ax_mm:.1f}, {ay_mm:.1f}, {arm_z_mm:.1f}) mm ...")
+                arm.move_to_xyz(ax_mm, ay_mm, arm_z_mm)
             except (ValueError, IndexError):
                 print("  Usage: arm x, y  (mm, local to arm base)")
 
@@ -376,7 +464,7 @@ def interactive_mode(gantry: GantryController, arm: RoArmController,
                 coords = raw.replace(",", " ").split()
                 tx_mm = float(coords[0])
                 ty_mm = float(coords[1])
-                goto_position(gantry, arm, tx_mm, ty_mm, arm_z_m, reach_radius_mm)
+                goto_position(gantry, arm, tx_mm, ty_mm, arm_z_mm, reach_radius_mm)
             except (ValueError, IndexError):
                 print("  Unknown command. Enter 'x, y' coordinates or type 'help'.")
 
@@ -403,8 +491,8 @@ def main():
         help=f"Arm reach radius in mm (default: {ARM_REACH_RADIUS_MM})"
     )
     parser.add_argument(
-        "--arm-z", type=float, default=ARM_DEFAULT_Z_M,
-        help=f"Default arm Z height in meters (default: {ARM_DEFAULT_Z_M})"
+        "--arm-z", type=float, default=ARM_DEFAULT_Z_MM,
+        help=f"Default arm Z height in mm (default: {ARM_DEFAULT_Z_MM})"
     )
     parser.add_argument(
         "--goto", nargs=2, type=float, metavar=("X", "Y"),
