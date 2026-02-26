@@ -26,8 +26,11 @@ import json
 import serial
 import threading
 import argparse
-import subprocess
 import sys
+
+import rclpy
+from rclpy.node import Node
+from roarm_moveit.srv import MovePointCmd
 
 # ============================================================
 #  Arm geometry (from ik.h)
@@ -141,12 +144,14 @@ class RoArmController:
     All x,y,z values are in mm. t is gripper/wrist angle in radians.
     """
 
-    def __init__(self, roarm_port: str = None, baud: int = 115200):
+    def __init__(self, roarm_port: str = None, baud: int = 115200, node: Node = None):
         self.roarm_port = roarm_port
         self.roarm_serial = None
         self._reader_thread = None
         self._last_feedback = None
         self._running = False
+        self._node = node
+        self._move_client = None
 
         if roarm_port:
             self.roarm_serial = serial.Serial(
@@ -163,6 +168,8 @@ class RoArmController:
 
             # drain any startup garbage
             time.sleep(1.0)
+        elif node:
+            self._move_client = node.create_client(MovePointCmd, '/move_point_cmd')
 
     def _read_loop(self):
         """Background thread to continuously read arm serial output."""
@@ -192,10 +199,14 @@ class RoArmController:
         self.roarm_serial.write(cmd_str.encode('utf-8'))
 
     def init_position(self):
-        """Move arm to initial/home position (T:100). Blocking on arm side."""
+        """Move arm to initial/home position."""
         print("  [RoArm] Moving to init position...")
-        self.send_command({"T": 100})
-        time.sleep(3)
+        if self.roarm_serial:
+            self.send_command({"T": 100})
+            time.sleep(3)
+        else:
+            # ROS2 mode: move to default home position (metres)
+            self._move_ros2(200.0, 0.0, 100.0)
 
     def move_to_xyz(self, x_mm: float, y_mm: float, z_mm: float,
                     t: float = GRIPPER_DEFAULT_T, blocking: bool = True) -> bool:
@@ -228,23 +239,42 @@ class RoArmController:
 
         return True
 
+    def wait_for_service(self, timeout_sec: float = 10.0) -> bool:
+        """Wait for /move_point_cmd service to become available (ROS2 mode only)."""
+        if self._move_client is None:
+            return True  # serial mode, no service needed
+        print("  [ROS2] Waiting for /move_point_cmd service...")
+        if not self._move_client.wait_for_service(timeout_sec=timeout_sec):
+            print("  [ROS2] Service /move_point_cmd not available!")
+            return False
+        print("  [ROS2] Service ready.")
+        return True
+
     def _move_ros2(self, x_mm: float, y_mm: float, z_mm: float) -> bool:
-        """Move via ROS2 service call (requires ROS2 stack running)."""
+        """Move via ROS2 service client (requires rclpy node and ROS2 stack running)."""
+        if self._move_client is None:
+            print("  [ROS2] No service client — pass a rclpy node or --roarm-port")
+            return False
+
         x_m = x_mm / 1000.0
         y_m = y_mm / 1000.0
         z_m = z_mm / 1000.0
-        try:
-            cmd = [
-                "ros2", "service", "call",
-                "/move_point_cmd",
-                "roarm_moveit/srv/MovePointCmd",
-                f"{{x: {x_m}, y: {y_m}, z: {z_m}}}"
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            print(f"  [ROS2] {result.stdout.strip()}")
-            return "success=True" in result.stdout or "success: true" in result.stdout.lower()
-        except Exception as e:
-            print(f"  [ROS2] Error: {e}")
+
+        request = MovePointCmd.Request()
+        request.x = x_m
+        request.y = y_m
+        request.z = z_m
+
+        print(f"  [ROS2] /move_point_cmd x={x_m:.4f} y={y_m:.4f} z={z_m:.4f}")
+        future = self._move_client.call_async(request)
+        rclpy.spin_until_future_complete(self._node, future, timeout_sec=30.0)
+
+        if future.result() is not None:
+            response = future.result()
+            print(f"  [ROS2] success={response.success}")
+            return response.success
+        else:
+            print("  [ROS2] Service call timed out or failed")
             return False
 
     def get_feedback(self) -> dict:
@@ -505,11 +535,24 @@ def main():
     gantry = GantryController(args.gantry_port, args.baud)
     print(f"  Connected on {args.gantry_port}")
 
-    arm = RoArmController(roarm_port=args.roarm_port, baud=args.baud)
+    # ROS2 is only needed when no direct serial port is given for the arm
+    ros2_node = None
+    if not args.roarm_port:
+        rclpy.init()
+        ros2_node = Node('gantry_arm_controller')
+        print("  ROS2 node initialized")
+
+    arm = RoArmController(roarm_port=args.roarm_port, baud=args.baud, node=ros2_node)
     if args.roarm_port:
         print(f"  RoArm direct serial on {args.roarm_port}")
     else:
         print(f"  RoArm via ROS2 service calls")
+        if not arm.wait_for_service(timeout_sec=10.0):
+            print("ERROR: /move_point_cmd not available. Is movepointcmd running?")
+            gantry.close()
+            ros2_node.destroy_node()
+            rclpy.shutdown()
+            sys.exit(1)
 
     try:
         if args.goto:
@@ -526,6 +569,9 @@ def main():
         print("Closing connections...")
         gantry.close()
         arm.close()
+        if ros2_node:
+            ros2_node.destroy_node()
+            rclpy.shutdown()
         print("Done.")
 
 
