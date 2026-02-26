@@ -323,11 +323,6 @@ In Rviz2, click Add, add RobotModel, and in the RobotModel tab, find Description
 
 Start the node to draw a circle:
 
-    ros2 run roarm_moveit_cmd movecirclecmd
-
-Call the service to make the robotic arm draw a circle at the specified position:
-
-    ros2 service call /move_circle_cmd roarm_moveit/srv/MoveCircleCmd "{x: 0.2, y: 0, z: 0, radius: 0.1}"
 
 [![](https://res.cloudinary.com/marcomontalbano/image/upload/v1723287696/video_to_markdown/images/youtube--ZcsHhUDnOKw-c05b58ac6eb4c4700831b2b3070cd403.jpg)](https://youtu.be/ZcsHhUDnOKw "")
 
